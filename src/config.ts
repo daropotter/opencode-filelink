@@ -153,7 +153,7 @@ export function validateOptions(raw: unknown, ctx: ValidateContext = {}): { conf
           }
           p = nodePath.resolve(ctx.projectDir, p)
         }
-        extraRoots.push(p)
+        extraRoots.push(nodePath.resolve(p))
       }
     } else bad("extraRoots", "an array of strings")
   }
