@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Package artefacts
+*.tgz
+
+# Logs
+*.log
+npm-debug.log*
+bun-debug.log*
+
+# Coverage
+coverage/
+
+# Environment
+.env
+.env.*
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
