@@ -149,6 +149,7 @@ function fakeCtx(
 ) {
   const toasts: { message: string; variant?: string }[] = []
   const commands: KeymapCommand[] = []
+  const layerModes: (string | undefined)[] = []
   const selects: {
     title: string
     options: readonly { title: string; value: string; description?: string }[]
@@ -169,7 +170,9 @@ function fakeCtx(
     },
     keymap: {
       layer: (factory) => {
-        commands.push(...(factory().commands ?? []))
+        const layer = factory()
+        layerModes.push(layer.mode)
+        commands.push(...(layer.commands ?? []))
       },
     },
     ui: {
@@ -190,6 +193,7 @@ function fakeCtx(
     ctx,
     toasts,
     commands,
+    layerModes,
     selects,
     setSelect: (v: string | undefined) => {
       selectResult = v
@@ -260,6 +264,7 @@ describe("setupTui", () => {
     const f = fakeCtx({ options: { keybind: "<leader>l" } })
     setupTui(f.ctx, { skipConfigFiles: true, platform: "linux", log: () => {} }).cleanup()
     expect(f.commands).toHaveLength(1)
+    expect(f.layerModes).toEqual(["global"]) // "base" is not reachable from palette/slash in 2.2.0
     expect(f.commands[0]).toMatchObject({
       id: "filelink.links",
       slash: { name: "links", aliases: ["files"] },

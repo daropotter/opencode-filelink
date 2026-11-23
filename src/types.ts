@@ -108,7 +108,7 @@ export interface TuiContext {
     readonly location?: { default?(): LocationLike | undefined }
   }
   readonly keymap?: {
-    layer?(factory: () => { commands?: readonly KeymapCommand[] }): void
+    layer?(factory: () => { mode?: string; priority?: number; commands?: readonly KeymapCommand[] }): void
   }
   readonly ui?: {
     readonly toast?: {

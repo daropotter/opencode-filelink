@@ -233,7 +233,9 @@ export function setupTui(ctx: TuiContext, deps: TuiDeps = {}): TuiHandle {
 
   if (typeof ctx.keymap?.layer === "function") {
     try {
+      // mode "global": the default "base" layer is not reachable from the palette or slash completion.
       ctx.keymap.layer(() => ({
+        mode: "global",
         commands: [
           {
             id: "filelink.links",
