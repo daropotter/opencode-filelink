@@ -3,9 +3,10 @@ import { appendFileSync } from "node:fs"
 export type Logger = (msg: string) => void
 
 /**
- * Logger. Writes to the file named by `OPENCODE_FILELINK_LOG` when set; the
- * server part also writes to stderr (opencode captures it in its log). The TUI
- * part never writes to stderr, since that would corrupt the terminal UI.
+ * Logger. Writes to the file named by `OPENCODE_FILELINK_LOG` when set and is
+ * silent otherwise. Writing to stderr is opt-in (`stderr: true`) and neither
+ * part enables it: in the TUI process it would corrupt the terminal UI, and
+ * the server may share that terminal (`--standalone`).
  */
 export function createLogger(
   scope: "server" | "tui",
