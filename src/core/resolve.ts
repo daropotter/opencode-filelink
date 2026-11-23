@@ -83,12 +83,39 @@ export function resolveTarget(href: string, opts: ResolveOptions): ResolveResult
     return { ok: false, code: "invalid", message: `Base directory is not absolute: ${opts.baseDir}` }
   }
 
+  // Allowed roots, both as written and symlink-resolved. Computed up front so
+  // candidates outside them are rejected *before* touching the file system:
+  // no existence probing outside the project, and on Windows no stat of a
+  // `\\host\share` path (which would send NTLM credentials to that host).
+  const lexicalRoots: string[] = []
+  const realRoots: string[] = []
+  for (const root of [opts.baseDir, ...(opts.roots ?? [])]) {
+    if (!root || !p.isAbsolute(root)) continue
+    const abs = p.resolve(root)
+    lexicalRoots.push(abs)
+    try {
+      realRoots.push(fs.realpathSync(abs))
+    } catch {
+      realRoots.push(abs)
+    }
+  }
+  const allRoots = [...lexicalRoots, ...realRoots]
+  const insideRoots = (abs: string) => allRoots.some((root) => isInside(root, abs, p))
+  // `\\server\share`, `\\?\…`, `\\.\…` (and `//…`) under Windows path rules.
+  const isNetworkOrDevice = (abs: string) => p.sep === "\\" && /^[\\/]{2}/.test(abs)
+
   let firstAbs: string | undefined
+  let refused: { abs: string; network: boolean } | undefined
   let found: { real: string; isDirectory: boolean; line?: number; col?: number } | undefined
   for (const c of parsed.candidates) {
     if (c.path.includes("\u0000")) continue
     const abs = p.resolve(opts.baseDir, expandHome(c.path, home, p))
     firstAbs ??= abs
+    const network = isNetworkOrDevice(abs)
+    if ((!opts.allowOutsideProject || network) && !insideRoots(abs)) {
+      refused ??= { abs, network }
+      continue
+    }
     let real: string
     let isDirectory: boolean
     try {
@@ -104,29 +131,36 @@ export function resolveTarget(href: string, opts: ResolveOptions): ResolveResult
   }
 
   if (!found) {
+    if (refused) {
+      return {
+        ok: false,
+        code: "outside-project",
+        path: refused.abs,
+        message: refused.network
+          ? `Refusing to open a network or device path: ${refused.abs} (add its share to extraRoots to allow)`
+          : `Refusing to open a path outside the project: ${refused.abs} (set allowOutsideProject: true to allow)`,
+      }
+    }
     const shown = firstAbs ? displayPath(firstAbs, opts.baseDir, p) : href
     const r: ResolveError = { ok: false, code: "not-found", message: `File not found: ${shown}` }
     return firstAbs ? { ...r, path: firstAbs } : r
   }
 
-  if (!opts.allowOutsideProject) {
-    const roots = [opts.baseDir, ...(opts.roots ?? [])]
-    const realRoots: string[] = []
-    for (const root of roots) {
-      if (!root || !p.isAbsolute(root)) continue
-      try {
-        realRoots.push(fs.realpathSync(root))
-      } catch {
-        realRoots.push(p.resolve(root))
-      }
+  // A symlink inside a root may still point outside: check the resolved path too.
+  if (!opts.allowOutsideProject && !realRoots.some((root) => isInside(root, found.real, p))) {
+    return {
+      ok: false,
+      code: "outside-project",
+      path: found.real,
+      message: `Refusing to open a path outside the project: ${found.real} (set allowOutsideProject: true to allow)`,
     }
-    if (!realRoots.some((root) => isInside(root, found.real, p))) {
-      return {
-        ok: false,
-        code: "outside-project",
-        path: found.real,
-        message: `Refusing to open a path outside the project: ${found.real} (set allowOutsideProject: true to allow)`,
-      }
+  }
+  if (isNetworkOrDevice(found.real) && !realRoots.some((root) => isInside(root, found.real, p))) {
+    return {
+      ok: false,
+      code: "outside-project",
+      path: found.real,
+      message: `Refusing to open a network or device path: ${found.real} (add its share to extraRoots to allow)`,
     }
   }
 

@@ -25,6 +25,10 @@ describe("isLocalFileHref", () => {
     "\\\\server\\share\\x",
     "docs/",
     "Makefile:12",
+    "www/index.html",
+    "1.2.3/CHANGELOG.md",
+    "-rf",
+    "--help.md",
   ])("local: %s", (href) => {
     expect(isLocalFileHref(href)).toBe(true)
   })
@@ -47,6 +51,14 @@ describe("isLocalFileHref", () => {
     "localhost:abc",
     "localhost:8080",
     "sms:123",
+    "www.example.com",
+    "www.example.com/docs/a.md",
+    "127.0.0.1:8080",
+    "192.168.1.10/admin",
+    "docs/\u0000x",
+    "C:\\x\u0000.md",
+    "\\\\srv\\x\ny",
+    "docs/x\u007f",
   ])("not local: %s", (href) => {
     expect(isLocalFileHref(href)).toBe(false)
   })

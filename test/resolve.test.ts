@@ -155,3 +155,141 @@ describe("isInside / displayPath", () => {
     expect(displayPath("/x/c.txt", "/a/b", posix)).toBe("/x/c.txt")
   })
 })
+
+/** Fake fs: `files` (absolute, as the path module writes them) exist; every probe is recorded. */
+function fakeFs(files: Record<string, "file" | "dir">, caseless = false) {
+  const norm = (p: string) => (caseless ? p.toLowerCase() : p)
+  const map = new Map(Object.entries(files).map(([k, v]) => [norm(k), { real: k, kind: v }]))
+  const probes: string[] = []
+  return {
+    probes,
+    fs: {
+      realpathSync(p: string) {
+        probes.push(p)
+        const e = map.get(norm(p))
+        if (!e) throw Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
+        return e.real
+      },
+      statSync(p: string) {
+        const e = map.get(norm(p))
+        if (!e) throw Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
+        return { isDirectory: () => e.kind === "dir" }
+      },
+    },
+  }
+}
+
+describe("resolveTarget: Windows path rules (path.win32 injected)", () => {
+  const files = {
+    "C:\\proj": "dir",
+    "C:\\proj\\docs\\a.md": "file",
+    "C:\\Windows\\win.ini": "file",
+    "D:\\other\\x.txt": "file",
+    "\\\\attacker\\share\\x.md": "file",
+    "\\\\nas\\team\\spec.md": "file",
+    "\\\\nas\\team": "dir",
+  } as const
+  const base = (o: { allowOutsideProject?: boolean; roots?: string[] } = {}) => {
+    const f = fakeFs(files, true)
+    return { f, opts: { baseDir: "C:\\proj", path: win32, fs: f.fs, homeDir: "C:\\Users\\me", ...o } }
+  }
+
+  test.each([
+    "docs\\a.md",
+    "docs/a.md",
+    "C:\\proj\\docs\\a.md",
+    "c:/PROJ/docs/A.md",
+    "file:///C:/proj/docs/a.md",
+    ".\\docs\\..\\docs\\a.md",
+  ])("inside: %s", (href) => {
+    const { opts } = base()
+    const r = resolveTarget(href, opts)
+    expect(r.ok && r.path).toBe("C:\\proj\\docs\\a.md")
+  })
+
+  test.each([
+    "..\\Windows\\win.ini",
+    "../Windows/win.ini",
+    "..%5CWindows%5Cwin.ini",
+    "%2e%2e%2fWindows%2fwin.ini",
+    "C:\\Windows\\win.ini",
+    "C:/proj/../Windows/win.ini",
+    "file:///C:/Windows/win.ini",
+    "D:\\other\\x.txt",
+  ])("outside, refused before any file system access: %s", (href) => {
+    const { f, opts } = base()
+    const r = resolveTarget(href, opts)
+    expect(r).toMatchObject({ ok: false, code: "outside-project" })
+    for (const p of f.probes) expect(p.toLowerCase().startsWith("c:\\proj")).toBe(true)
+  })
+
+  test.each([
+    "\\\\attacker\\share\\x.md",
+    "//attacker/share/x.md".replace(/^\/\//, "\\\\"),
+    "/\\attacker\\share\\x.md",
+    "\\/attacker/share/x.md",
+    "file://attacker/share/x.md",
+    "\\\\?\\UNC\\attacker\\share\\x.md",
+    "\\\\.\\pipe\\x",
+  ])("network/device path never stat'ed, even with allowOutsideProject (NTLM leak): %s", (href) => {
+    for (const allowOutsideProject of [false, true]) {
+      const { f, opts } = base({ allowOutsideProject })
+      const r = resolveTarget(href, opts)
+      expect(r.ok).toBe(false)
+      if (!r.ok) expect(r.code).toBe("outside-project")
+      if (!r.ok && allowOutsideProject) expect(r.message).toContain("network or device path")
+      expect(f.probes.some((p) => p.startsWith("\\\\") || p.startsWith("/"))).toBe(false)
+    }
+  })
+
+  test("a share listed in roots is allowed", () => {
+    const { opts } = base({ roots: ["\\\\nas\\team"] })
+    const r = resolveTarget("\\\\nas\\team\\spec.md", opts)
+    expect(r.ok && r.path).toBe("\\\\nas\\team\\spec.md")
+  })
+
+  test("allowOutsideProject allows local drives", () => {
+    const { opts } = base({ allowOutsideProject: true })
+    expect(resolveTarget("D:\\other\\x.txt", opts).ok).toBe(true)
+    expect(resolveTarget("~\\..\\..\\Windows\\win.ini", opts).ok).toBe(true)
+  })
+
+  test("NUL bytes never reach the file system", () => {
+    const { f, opts } = base()
+    expect(resolveTarget("docs/a.md%00.txt", opts).ok).toBe(false)
+    expect(f.probes.some((p) => p.includes("\u0000"))).toBe(false)
+  })
+})
+
+describe("resolveTarget: POSIX lexical pre-check", () => {
+  test("paths outside the roots are refused without probing the file system", () => {
+    const f = fakeFs({ "/proj": "dir", "/proj/a.md": "file", "/etc/passwd": "file" })
+    const opts = { baseDir: "/proj", path: posix, fs: f.fs, homeDir: "/home/me" }
+    for (const href of [
+      "../etc/passwd",
+      "/etc/passwd",
+      "%2e%2e/etc/passwd",
+      "..%2Fetc%2Fpasswd",
+      "~/x",
+      "file:///etc/passwd",
+      "a.md/../../etc/passwd",
+    ]) {
+      expect(resolveTarget(href, opts)).toMatchObject({ ok: false, code: "outside-project" })
+    }
+    expect(f.probes.every((p) => p === "/proj" || p.startsWith("/proj/"))).toBe(true)
+    expect(resolveTarget("a.md", opts).ok).toBe(true)
+  })
+
+  test("a literal file named like an encoded traversal inside the project is found", () => {
+    const f = fakeFs({ "/proj": "dir", "/proj/..%2Fsecret": "file" })
+    const r = resolveTarget("..%2Fsecret", { baseDir: "/proj", path: posix, fs: f.fs })
+    expect(r.ok && r.path).toBe("/proj/..%2Fsecret")
+  })
+
+  test("symlinked root: links written with the real path are inside", () => {
+    const f = fakeFs({ "/data/proj": "dir", "/data/proj/a.md": "file" })
+    const fs = { ...f.fs, realpathSync: (p: string) => f.fs.realpathSync(p.replace(/^\/home\/me\/proj/, "/data/proj")) }
+    const r = resolveTarget("/data/proj/a.md", { baseDir: "/home/me/proj", path: posix, fs })
+    expect(r.ok && r.path).toBe("/data/proj/a.md")
+  })
+})

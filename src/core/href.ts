@@ -33,6 +33,11 @@ export function isLocalFileHref(href: unknown): href is string {
   const s = href.trim()
   if (s === "" || s.startsWith("#") || s.startsWith("?")) return false
   if (s.startsWith("//")) return false // protocol-relative URL
+  // Scheme-less web addresses the model sometimes writes: "www.example.com", "127.0.0.1:8080/x".
+  if (/^www\.[^\s/]+\.[^\s/]+/i.test(s) || /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:[/?#]|$)/.test(s)) return false
+  // Reject anything with control characters (NUL, newlines, escapes).
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional
+  if (/[\u0000-\u001f\u007f]/.test(s)) return false
   if (WINDOWS_DRIVE.test(s) || UNC.test(s)) return true
   const m = SCHEME.exec(s)
   if (m) {
@@ -44,9 +49,6 @@ export function isLocalFileHref(href: unknown): href is string {
     // Anything else with a scheme (http, mailto, vscode, "C:foo", ...) is left alone.
     return false
   }
-  // Reject anything with control characters.
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional
-  if (/[\u0000-\u001f]/.test(s)) return false
   return true
 }
 
@@ -126,7 +128,9 @@ export function parseHref(href: string): ParsedHref | undefined {
       fragment = body.slice(hash + 1)
       body = body.slice(0, hash)
     }
-    const q = body.indexOf("?")
+    // `\\?\` / `\\.\` Win32 device prefixes contain a literal `?`: not a query.
+    const device = /^[\\/]{2}[?.][\\/]/.exec(body)?.[0].length ?? 0
+    const q = body.indexOf("?", device)
     if (q >= 0) body = body.slice(0, q)
     if (body === "") return undefined
     if (WINDOWS_DRIVE.test(body)) kind = "windows"
