@@ -56,18 +56,18 @@ describe("buildCommands: linux", () => {
     expect(cmds[1]?.args).toContain(`['${uri}']`)
     expect(cmds[2]?.args).toContain(`array:string:${uri}`)
     expect(cmds[2]?.args).toContain("--print-reply")
-    expect(cmds[3]).toEqual({ cmd: "xdg-open", args: ["/home/u/proj/docs"] })
-    expect(cmds[4]).toEqual({ cmd: "gio", args: ["open", "/home/u/proj/docs"] })
+    expect(cmds[3]).toEqual({ cmd: "xdg-open", args: ["/home/u/proj/docs"], wait: true })
+    expect(cmds[4]).toEqual({ cmd: "gio", args: ["open", "/home/u/proj/docs"], wait: true })
   })
   test("reveal a directory selects it in its parent", () => {
     const cmds = buildCommands({ action: "reveal", platform: "linux", path: "/p/src", isDirectory: true })
     expect(cmds[0]?.args).toContain("file:///p/src")
-    expect(cmds[3]).toEqual({ cmd: "xdg-open", args: ["/p"] })
+    expect(cmds[3]).toEqual({ cmd: "xdg-open", args: ["/p"], wait: true })
   })
   test("open", () => {
     expect(buildCommands({ action: "open", platform: "linux", ...file })).toEqual([
-      { cmd: "xdg-open", args: [file.path] },
-      { cmd: "gio", args: ["open", file.path] },
+      { cmd: "xdg-open", args: [file.path], wait: true },
+      { cmd: "gio", args: ["open", file.path], wait: true },
     ])
   })
   test("editor", () => {
@@ -83,8 +83,8 @@ describe("buildCommands: linux", () => {
 
 describe("buildCommands: darwin", () => {
   test("reveal / open / editor", () => {
-    expect(buildCommands({ action: "reveal", platform: "darwin", ...file })).toEqual([{ cmd: "open", args: ["-R", file.path] }])
-    expect(buildCommands({ action: "open", platform: "darwin", ...file })).toEqual([{ cmd: "open", args: [file.path] }])
+    expect(buildCommands({ action: "reveal", platform: "darwin", ...file })).toEqual([{ cmd: "open", args: ["-R", file.path], wait: true }])
+    expect(buildCommands({ action: "open", platform: "darwin", ...file })).toEqual([{ cmd: "open", args: [file.path], wait: true }])
     expect(buildCommands({ action: "editor", platform: "darwin", ...file, line: 7, editor: ["zed", "{file}:{line}:{col}"] })).toEqual([
       { cmd: "zed", args: [`${file.path}:7`] },
     ])
@@ -103,13 +103,18 @@ describe("buildCommands: win32", () => {
     expect(cmds).toEqual([{ cmd: "explorer.exe", args: [`"${w.path}"`], verbatim: true }])
     expect(cmds.some((c) => c.cmd.toLowerCase().includes("cmd"))).toBe(false)
   })
+  test("drive root is opened without a trailing backslash before the quote", () => {
+    const cmds = buildCommands({ action: "reveal", platform: "win32", path: "C:\\", isDirectory: true })
+    expect(cmds).toEqual([{ cmd: "explorer.exe", args: ['"C:\\."'], verbatim: true }])
+    for (const c of cmds) for (const a of c.args) expect(a.endsWith('\\"')).toBe(false)
+  })
+
   test("paths with quotes are refused", () => {
     expect(buildCommands({ action: "reveal", platform: "win32", path: 'C:\\a"b', isDirectory: false })).toEqual([])
   })
-  test("editor falls back to the .cmd shim", () => {
+  test("editor: no .cmd retry (resolution to an .exe happens in the opener)", () => {
     expect(buildCommands({ action: "editor", platform: "win32", ...w, line: 2, editor: ["code", "-g", "{file}:{line}:{col}"] })).toEqual([
       { cmd: "code", args: ["-g", `${w.path}:2`] },
-      { cmd: "code.cmd", args: ["-g", `${w.path}:2`] },
     ])
     expect(buildCommands({ action: "editor", platform: "win32", ...w, editor: ["C:\\zed\\zed.exe", "{file}"] })).toEqual([
       { cmd: "C:\\zed\\zed.exe", args: [w.path] },
@@ -122,11 +127,10 @@ describe("buildCommands: wsl", () => {
   test("reveal uses explorer.exe /select with the Windows path", () => {
     expect(buildCommands({ action: "reveal", platform: "wsl", ...l })).toEqual([{ cmd: "explorer.exe", args: [`/select,${l.winPath}`] }])
   })
-  test("open prefers wslview then explorer.exe", () => {
-    expect(buildCommands({ action: "open", platform: "wsl", ...l })).toEqual([
-      { cmd: "wslview", args: [l.path] },
-      { cmd: "explorer.exe", args: [l.winPath] },
-    ])
+  test("open uses explorer.exe only (wslview evaluates $(...) in file names via PowerShell)", () => {
+    const cmds = buildCommands({ action: "open", platform: "wsl", ...l })
+    expect(cmds).toEqual([{ cmd: "explorer.exe", args: [l.winPath] }])
+    expect(cmds.some((c) => c.cmd === "wslview")).toBe(false)
   })
   test("falls back to computed Windows path", () => {
     expect(buildCommands({ action: "reveal", platform: "wsl", path: "/mnt/c/x.txt", isDirectory: false })).toEqual([
@@ -220,12 +224,34 @@ describe("runCommands", () => {
     const r = await runCommands(
       [
         { cmd: "code", args: [] },
-        { cmd: "code.cmd", args: [] },
+        { cmd: "codium", args: [] },
       ],
       { spawner },
     )
-    expect(r.ok && r.command.cmd).toBe("code.cmd")
+    expect(r.ok && r.command.cmd).toBe("codium")
     expect(r.attempts[0]?.error).toContain("EINVAL")
+  })
+
+  test("batch files are never spawned when refuseBatchFiles is set (default on Windows)", async () => {
+    const { spawner, calls } = fakeSpawner()
+    for (const cmd of ["C:\\x\\code.cmd", "run.BAT", "evil.cmd.", "evil.bat  "]) {
+      const r = await runCommands([{ cmd, args: ["a&calc"] }], { spawner, refuseBatchFiles: true })
+      expect(r.ok).toBe(false)
+      if (!r.ok) expect(r.message).toContain("batch file")
+    }
+    expect(calls).toHaveLength(0)
+    const ok = await runCommands([{ cmd: "C:\\x\\Code.exe", args: [] }], { spawner, refuseBatchFiles: true })
+    expect(ok.ok).toBe(true)
+  })
+
+  test("command env is merged over the parent environment", async () => {
+    const { spawner, calls } = fakeSpawner()
+    await runCommands([{ cmd: "x", args: [], env: { ELECTRON_RUN_AS_NODE: "1" } }], { spawner })
+    const env = calls[0]?.options.env as Record<string, string> | undefined
+    expect(env?.ELECTRON_RUN_AS_NODE).toBe("1")
+    expect(env?.PATH ?? env?.Path).toBe(process.env.PATH ?? process.env.Path)
+    await runCommands([{ cmd: "y", args: [] }], { spawner })
+    expect(calls[1]?.options.env).toBeUndefined()
   })
 
   test("all failing reports every attempt", async () => {

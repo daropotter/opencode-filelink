@@ -1,5 +1,6 @@
 import { execFile, type SpawnOptions, spawn } from "node:child_process"
 import type { Command } from "./commands.js"
+import { isBatchFile } from "./winexe.js"
 
 /** The part of a ChildProcess the executor uses. */
 export interface ChildLike {
@@ -27,6 +28,11 @@ export interface ExecOptions {
   readonly waitTimeoutMs?: number
   /** How long to wait for a 'spawn'/'error' event before assuming the process started. */
   readonly spawnTimeoutMs?: number
+  /**
+   * Refuse to spawn `.cmd`/`.bat` files (they always run through cmd.exe,
+   * which would interpret metacharacters in arguments). Default: on Windows.
+   */
+  readonly refuseBatchFiles?: boolean
 }
 
 export const defaultSpawner: Spawner = (cmd, args, options) => spawn(cmd, [...args], options)
@@ -49,6 +55,10 @@ function runOne(command: Command, opts: ExecOptions): Promise<string | undefined
       if (timer) clearTimeout(timer)
       resolve(error)
     }
+    if ((opts.refuseBatchFiles ?? process.platform === "win32") && isBatchFile(command.cmd)) {
+      done(`${command.cmd}: refusing to run a batch file (it would be interpreted by cmd.exe)`)
+      return
+    }
     let child: ChildLike
     try {
       child = spawner(command.cmd, command.args, {
@@ -57,6 +67,7 @@ function runOne(command: Command, opts: ExecOptions): Promise<string | undefined
         stdio: "ignore",
         windowsHide: true,
         ...(command.verbatim ? { windowsVerbatimArguments: true } : {}),
+        ...(command.env ? { env: { ...process.env, ...command.env } } : {}),
       })
     } catch (err) {
       done(describeError(err, command.cmd))

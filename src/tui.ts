@@ -137,6 +137,7 @@ export function setupTui(ctx: TuiContext, deps: TuiDeps = {}): TuiHandle {
     )
     log(`${outcome.ok ? "ok" : "fail"}: ${href} -> ${outcome.message}`)
     if (!outcome.ok) toast(outcome.message, "error")
+    else if (outcome.warning) toast(`${outcome.message}. ${outcome.warning}`, "warning")
     else if (config.toast) toast(outcome.message, "success")
     return outcome
   }

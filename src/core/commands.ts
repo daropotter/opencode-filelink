@@ -14,6 +14,8 @@ export interface Command {
    * (falls through to the next command). Used for short-lived DBus calls.
    */
   readonly wait?: boolean
+  /** Extra environment variables for the child (merged over the parent's). */
+  readonly env?: Readonly<Record<string, string>>
 }
 
 export interface BuildInput {
@@ -102,8 +104,10 @@ function linuxReveal(path: string): Command[] {
       ],
       wait: true,
     },
-    { cmd: "xdg-open", args: [parent] },
-    { cmd: "gio", args: ["open", parent] },
+    // xdg-open/gio exit non-zero without a usable session (no DISPLAY, headless
+    // server): wait for the exit code so the failure is reported, not hidden.
+    { cmd: "xdg-open", args: [parent], wait: true },
+    { cmd: "gio", args: ["open", parent], wait: true },
   ]
 }
 
@@ -118,12 +122,8 @@ function editorCommands(input: BuildInput, platform: Platform): Command[] {
   })
   const [cmd, ...args] = argv
   if (!cmd) return []
-  const cmds: Command[] = [{ cmd, args }]
-  // Windows: VS Code & co. ship `code.cmd` shims that CreateProcess cannot find as "code".
-  if (platform === "win32" && !/\.(exe|cmd|bat|com)$/i.test(cmd) && !/[\\/]/.test(cmd)) {
-    cmds.push({ cmd: `${cmd}.cmd`, args })
-  }
-  return cmds
+  // Windows: the opener resolves `cmd` to an absolute .exe (winexe.ts); batch shims are never run.
+  return [{ cmd, args }]
 }
 
 /**
@@ -138,14 +138,18 @@ export function buildCommands(input: BuildInput): Command[] {
     case "linux":
       if (action === "reveal") return linuxReveal(path)
       return [
-        { cmd: "xdg-open", args: [path] },
-        { cmd: "gio", args: ["open", path] },
+        { cmd: "xdg-open", args: [path], wait: true },
+        { cmd: "gio", args: ["open", path], wait: true },
       ]
     case "darwin":
-      return action === "reveal" ? [{ cmd: "open", args: ["-R", path] }] : [{ cmd: "open", args: [path] }]
+      // `open` returns quickly and exits non-zero when it cannot (no GUI session, no handler).
+      return action === "reveal" ? [{ cmd: "open", args: ["-R", path], wait: true }] : [{ cmd: "open", args: [path], wait: true }]
     case "win32": {
       if (!isSafeWindowsPath(path)) return []
+      // A drive or share root ("C:\\") would end in `\"`, which reads as an escaped quote; open it instead.
+      if (/[\\/]$/.test(path)) return [{ cmd: "explorer.exe", args: [`"${path}."`], verbatim: true }]
       // explorer.exe exits with 1 even on success: never wait for it.
+      // `cmd` is resolved to %SystemRoot%\\explorer.exe by the opener (never the current directory).
       return action === "reveal"
         ? [{ cmd: "explorer.exe", args: [`/select,"${path}"`], verbatim: true }]
         : [{ cmd: "explorer.exe", args: [`"${path}"`], verbatim: true }]
@@ -154,10 +158,9 @@ export function buildCommands(input: BuildInput): Command[] {
       const win = input.winPath ?? wslToWindowsPath(path, undefined)
       if (!isSafeWindowsPath(win)) return []
       if (action === "reveal") return [{ cmd: "explorer.exe", args: [`/select,${win}`] }]
-      return [
-        { cmd: "wslview", args: [path] },
-        { cmd: "explorer.exe", args: [win] },
-      ]
+      // Not `wslview`: wslu hands the path to `powershell.exe -Command "Start \"<path>\""`,
+      // where `$(...)` or a backtick in a (legal) file name is evaluated.
+      return [{ cmd: "explorer.exe", args: [win] }]
     }
   }
 }

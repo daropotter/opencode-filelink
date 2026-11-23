@@ -113,7 +113,7 @@ describe("openLink", () => {
         env: { WSL_DISTRO_NAME: "Arch" },
       },
     )
-    expect(calls.map((c) => c.cmd)).toEqual(["wslview"])
+    expect(calls.map((c) => c.cmd)).toEqual(["explorer.exe"])
   })
 
   test("missing file and outside project produce errors without spawning", async () => {
@@ -181,5 +181,147 @@ describe("openLink", () => {
       },
     )
     expect(r.ok).toBe(false)
+  })
+})
+
+describe("openLink: Windows editor resolution", () => {
+  const VSCODE = "C:\\Program Files\\Microsoft VS Code"
+  const winEnv = { PATH: `C:\\Windows\\system32;${VSCODE}\\bin`, PATHEXT: ".COM;.EXE;.BAT;.CMD", SystemRoot: "C:\\Windows" }
+  const isFileOf = (files: string[]) => (p: string) => files.some((f) => f.toLowerCase() === p.toLowerCase())
+
+  test("explorer.exe is spawned by absolute path from %SystemRoot%", async () => {
+    const { spawner, calls } = fakeSpawner()
+    const r = await openLink(
+      { href: "docs/report.md" },
+      { config: cfg(), baseDir: project.root, platform: "win32", exec: { spawner, refuseBatchFiles: true }, env: winEnv },
+    )
+    expect(r.ok).toBe(true)
+    expect(calls.map((c) => c.cmd)).toEqual(["C:\\Windows\\explorer.exe"])
+    expect(calls[0]?.options.windowsVerbatimArguments).toBe(true)
+  })
+
+  test("code.cmd shim → Code.exe with cli.js, no shell, no batch file", async () => {
+    const { spawner, calls } = fakeSpawner()
+    const files = [`${VSCODE}\\bin\\code.cmd`, `${VSCODE}\\Code.exe`, `${VSCODE}\\resources\\app\\out\\cli.js`]
+    const r = await openLink(
+      { href: "src/main.go:7" },
+      {
+        config: cfg({ editor: ["code", "-g", "{file}:{line}:{col}"] }),
+        baseDir: project.root,
+        platform: "win32",
+        exec: { spawner, refuseBatchFiles: true },
+        env: winEnv,
+        isFile: isFileOf(files),
+      },
+    )
+    expect(r).toMatchObject({ ok: true, action: "editor" })
+    expect(r.warning).toBeUndefined()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.cmd).toBe(`${VSCODE}\\Code.exe`)
+    expect(calls[0]?.args).toEqual([`${VSCODE}\\resources\\app\\out\\cli.js`, "-g", `${join(project.root, "src", "main.go")}:7`])
+    expect(calls[0]?.options).toMatchObject({ shell: false })
+    expect((calls[0]?.options.env as Record<string, string> | undefined)?.ELECTRON_RUN_AS_NODE).toBe("1")
+  })
+
+  test("an unmappable .cmd editor falls back to the default action with a warning", async () => {
+    const { spawner, calls } = fakeSpawner()
+    const r = await openLink(
+      { href: "src/main.go:7" },
+      {
+        config: cfg({ editor: ["myedit", "{file}"] }),
+        baseDir: project.root,
+        platform: "win32",
+        exec: { spawner, refuseBatchFiles: true },
+        env: { ...winEnv, PATH: "C:\\tools" },
+        isFile: isFileOf(["C:\\tools\\myedit.cmd"]),
+      },
+    )
+    expect(r).toMatchObject({ ok: true, action: "reveal" })
+    expect(r.message).toContain("editor unavailable")
+    expect(r.warning).toContain("batch file")
+    expect(calls.map((c) => c.cmd)).toEqual(["C:\\Windows\\explorer.exe"])
+    expect(calls.some((c) => /\.(cmd|bat)$/i.test(c.cmd))).toBe(false)
+  })
+
+  test("editor not on PATH: fallback, configured action is used", async () => {
+    const { spawner, calls } = fakeSpawner()
+    const r = await openLink(
+      { href: "src/main.go", action: "editor" },
+      {
+        config: cfg({ action: "open", editor: ["zed", "{file}"] }),
+        baseDir: project.root,
+        platform: "win32",
+        exec: { spawner },
+        env: winEnv,
+        isFile: () => false,
+      },
+    )
+    expect(r).toMatchObject({ ok: true, action: "open" })
+    expect(r.warning).toContain("not found on PATH")
+    expect(calls).toHaveLength(1)
+  })
+})
+
+describe("openLink: executable targets are revealed, not opened", () => {
+  let exe: ReturnType<typeof tempTree>
+  beforeAll(() => {
+    exe = tempTree({ "run.BAT": "x", "setup.desktop": "x", "Evil.app/Contents": null, "tool.ps1": "x", "notes.md": "x" })
+  })
+  afterAll(() => exe.cleanup())
+
+  test.each([
+    ["win32", "run.BAT"],
+    ["win32", "tool.ps1"],
+    ["wsl", "run.BAT"],
+    ["linux", "setup.desktop"],
+    ["darwin", "Evil.app"],
+  ] as const)("%s: %s", async (platform, href) => {
+    const { spawner } = fakeSpawner()
+    const r = await openLink(
+      { href, action: "open" },
+      {
+        config: cfg(),
+        baseDir: exe.root,
+        platform,
+        exec: { spawner },
+        env: { SystemRoot: "C:\\Windows" },
+        wslpath: async () => "C:\\x",
+      },
+    )
+    expect(r).toMatchObject({ ok: true, action: "reveal" })
+    expect(r.warning).toContain("executable")
+  })
+
+  test("documents are still opened", async () => {
+    const { spawner } = fakeSpawner()
+    const r = await openLink(
+      { href: "notes.md", action: "open" },
+      { config: cfg(), baseDir: exe.root, platform: "linux", exec: { spawner } },
+    )
+    expect(r).toMatchObject({ ok: true, action: "open" })
+    expect(r.warning).toBeUndefined()
+  })
+})
+
+describe("openLink: no graphical session", () => {
+  test("xdg-open failure explains missing DISPLAY / WAYLAND_DISPLAY", async () => {
+    const { spawner } = fakeSpawner(() => ({ exit: 3 }))
+    const r = await openLink(
+      { href: "docs/report.md", action: "open" },
+      { config: cfg(), baseDir: project.root, platform: "linux", exec: { spawner }, env: {} },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain("xdg-open: exited with code 3")
+    expect(r.message).toContain("no graphical session")
+  })
+
+  test("no hint when a display is set", async () => {
+    const { spawner } = fakeSpawner(() => ({ exit: 4 }))
+    const r = await openLink(
+      { href: "docs/report.md", action: "open" },
+      { config: cfg(), baseDir: project.root, platform: "linux", exec: { spawner }, env: { WAYLAND_DISPLAY: "wayland-0" } },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.message).not.toContain("no graphical session")
   })
 })
