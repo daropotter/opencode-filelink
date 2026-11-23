@@ -38,7 +38,8 @@ _Demo recording coming soon._
 - **`/links` command** (alias `/files`, also in the command palette). Lists the local file links in the current session, so you can reveal, open or edit any of them from a dialog. (`/open` is already a built-in opencode command.)
 - **Agent tools.** `open_file({ path, line?, action? })` and `reveal_file({ path })` let the agent show you a file directly.
 - **Localhost bridge.** A small HTTP endpoint on `127.0.0.1` with a random token, for clients where click interception is not possible. Optional `linkRewrite: "instruct"` asks the model to write bridge URLs instead of plain paths.
-- **Cross-platform.** Linux (DBus `FileManager1`, then `xdg-open`), WSL (`explorer.exe`, `wslview`), macOS (`open -R`) and Windows (`explorer /select`). See [Supported systems](#supported-systems) for what has been tested where.
+- **Safe by default.** No shell is ever used, `open` never runs executable-like files (they are revealed instead), and Windows network paths are refused unless you allow them.
+- **Cross-platform.** Linux (DBus `FileManager1`, then `xdg-open`), WSL (`explorer.exe`), macOS (`open -R`) and Windows (`explorer /select`). See [Supported systems](#supported-systems) for what has been tested where.
 
 ## Requirements
 
@@ -64,7 +65,17 @@ opencode installs plugins listed in its config automatically on startup. You do 
 
 The plain string form loads the plugin with default options. To pass options, use the object form shown in [Configuration](#configuration).
 
-npm specs are installed into `~/.cache/opencode/npm/`. Restart opencode to pick up a new version.
+### From GitHub
+
+```json
+{
+  "plugins": ["github:daropotter/opencode-filelink"]
+}
+```
+
+Append `#<branch-or-tag>` to pin a ref, for example `github:daropotter/opencode-filelink#v0.1.0`. The repository does not contain the built `dist/` folder; the package's `prepare` script compiles it during installation, which npm runs for git dependencies. If your npm setup restricts install scripts (for example `ignore-scripts=true`, or an allow-list for dependency scripts), it may warn about or skip that script, and the plugin will not load. Use the npm package in that case.
+
+npm and GitHub specs are installed into `~/.cache/opencode/npm/`. Restart opencode to pick up a new version.
 
 ### From a local checkout (development)
 
@@ -82,9 +93,6 @@ bun run build
 ```
 
 The plugin loads from the built `dist/` folder, so run `bun run build` first. Local paths (`./x`, `../x`, `~/x`, absolute, `file://`) are resolved against the directory of the config file that lists them. opencode watches them and reloads the plugin when they change.
-
-> [!NOTE]
-> Installing straight from GitHub (`github:daropotter/opencode-filelink`) is not supported yet: the repository does not contain the built `dist/` folder. Use the npm package or a local checkout.
 
 ## Configuration
 
@@ -135,13 +143,13 @@ Invalid values and unknown keys are ignored with a warning in the [debug log](#t
 | `lineAction` | `"reveal"` \| `"open"` \| `"editor"` | unset | What a click on a link with a line number does. When unset: `"editor"` if an editor is configured, otherwise `action`. |
 | `editor` | `string` \| `string[]` | unset | Editor command: a [preset name](#editor), a command template string, or an argument array. See [Editor](#editor). |
 | `editorFromEnv` | `boolean` | `false` | When `editor` is unset, build the editor command from `$VISUAL` or `$EDITOR`. Terminal editors are skipped. |
-| `allowOutsideProject` | `boolean` | `false` | Allow links to any existing file, including outside the project, session directory and `extraRoots`. |
+| `allowOutsideProject` | `boolean` | `false` | Allow links to any existing file, including outside the project, session directory and `extraRoots`. On Windows, network and device paths (`\\server\share`, `\\?\...`) stay refused unless they are inside `extraRoots`. |
 | `extraRoots` | `string[]` | `[]` | Additional directories links may point into. Absolute, `~/`, or relative to the project directory. |
 | `intercept` | `boolean` | `true` | Intercept clicks on local links in the TUI. With `false`, only `/links`, the tools and the bridge work. |
 | `toast` | `boolean` | `true` | Show a toast after a successful action. Errors are always shown. |
 | `keybind` | `string` \| `false` | `false` | Key binding for the `/links` command, for example `"<leader>o"`. |
 | `bridge` | `{ enabled?: boolean, port?: number }` \| `boolean` | `{ "enabled": true, "port": 0 }` | The [localhost bridge](#how-it-works). `port: 0` picks a random free port. `true`/`false` is short for `{ "enabled": ... }`. |
-| `linkRewrite` | `"off"` \| `"instruct"` | `"off"` | `instruct` adds a system instruction asking the model to write local file links as bridge URLs. It starts the bridge even when `bridge.enabled` is `false`. Read the [security notes](#security) first: the bridge token is sent to your LLM provider. |
+| `linkRewrite` | `"off"` \| `"instruct"` | `"off"` | `instruct` adds a system instruction asking the model to write local file links as bridge URLs, and adds a bridge URL to the agent tools' output. It starts the bridge even when `bridge.enabled` is `false`. Read the [security notes](#security) first: the bridge token is sent to your LLM provider. |
 | `tools` | `boolean` | `true` | Register the `open_file` and `reveal_file` agent tools. |
 
 ### Editor
@@ -220,27 +228,31 @@ In the TUI, relative paths are resolved against the current session's directory 
 | `src/file.go:42`, `src/file.go:42:7`, `src/file.go#L42` | Editor at line 42 (col 7); without an editor: reveal | Editor at the line; without an editor: open | Editor at the line |
 | `img/my%20pic.png` | Decoded to `img/my pic.png`, then as above | as above | as above |
 | `/abs/path`, `~/notes.md`, `file:///abs/path` inside the allowed roots | as for relative paths | as above | as above |
-| `/abs/path`, `~/notes.md`, `file:///abs/path` outside the allowed roots | Error toast: refused, unless `allowOutsideProject: true` | same | same |
-| `docs/missing.md` | Error toast: `File not found` | same | same |
-| `https://example.com`, `mailto:`, `#section` | Not intercepted: opencode handles it as before | same | same |
+| `/abs/path`, `~/notes.md`, `file:///abs/path` outside the allowed roots | Error toast: refused (whether or not the file exists), unless `allowOutsideProject: true` | same | same |
+| `docs/missing.md` (inside the allowed roots) | Error toast: `File not found` | same | same |
+| `app.exe`, `install.run`, `x.desktop` (executable-like) | as above | Revealed instead, with a warning toast | Opens in the editor |
+| `https://example.com`, `mailto:`, `#section`, `www.example.com`, `127.0.0.1:8080` | Not intercepted: opencode handles it as before | same | same |
 
-`lineAction` overrides the line-number row. With `action: "editor"` and no editor configured, the plugin opens the file in the default app instead. For `path:42`, a file literally named `path:42` is tried first.
+`lineAction` overrides the line-number row. With `action: "editor"` and no editor configured, the plugin opens the file in the default app instead. For `path:42`, a file literally named `path:42` is tried first. Links containing control characters are never intercepted.
+
+"Executable-like" means file types whose default application runs code: scripts, installers, shortcuts and app bundles (for example `.exe`, `.bat`, `.ps1`, `.lnk`, `.msi` on Windows and WSL, `.app`, `.command`, `.pkg` on macOS, `.desktop`, `.AppImage`, `.run`, `.jar` on Linux). `open` reveals them instead, also when the agent tool or the bridge asks for `open`.
 
 ## Supported systems
 
 | System | `reveal` | `open` | Status |
 |---|---|---|---|
 | **Linux** | DBus `org.freedesktop.FileManager1.ShowItems` via `busctl`, then `gdbus`, then `dbus-send`; if none succeeds, `xdg-open` (then `gio open`) on the parent directory | `xdg-open`, then `gio open` | Developed and smoke-tested on opencode 2.2.0 |
-| **WSL** | `explorer.exe /select,<path>`, with the path converted by `wslpath -w` | `wslview` (from wslu), then `explorer.exe` | Implemented; needs community verification |
+| **WSL** | `explorer.exe /select,<path>`, with the path converted by `wslpath -w` | `explorer.exe <path>` | Implemented; needs community verification |
 | **macOS** | `open -R <path>` (Finder) | `open <path>` | Implemented; needs community verification |
-| **Windows** | `explorer.exe /select,"<path>"` | `explorer.exe "<path>"` | Implemented; needs community verification |
+| **Windows** | `%SystemRoot%\explorer.exe /select,"<path>"` | `%SystemRoot%\explorer.exe "<path>"` | Implemented; needs community verification |
 | **Headless or remote server** | Not available | Not available | There is no display or session bus. See [FAQ](#troubleshooting-and-faq). |
 
 Notes:
 
-- **Linux:** Nautilus, Dolphin, Nemo, Caja and Thunar implement `FileManager1`. With a file manager that does not (for example PCManFM, or terminal file managers), the plugin opens the parent directory without selecting the file. The DBus calls must exit successfully to count; the other commands count as successful once started. Other Unix systems (BSDs) use the Linux commands.
-- **WSL:** detected through `WSL_DISTRO_NAME`, `WSL_INTEROP` or `/proc/version`. Without `wslpath`, `/mnt/c/...` becomes `C:\...` and other paths become `\\wsl.localhost\<distro>\...`. The `editor` command runs on the Linux side with the Linux path.
-- **Windows:** `explorer.exe` is never waited for, because it returns a non-zero exit code even on success. The plugin therefore cannot detect when Explorer fails. Paths containing `"`, `<`, `>`, `|`, `*`, `?` or control characters are refused. Commands never go through `cmd /c start`.
+- **Linux:** Nautilus, Dolphin, Nemo, Caja and Thunar implement `FileManager1`. With a file manager that does not (for example PCManFM, or terminal file managers), the plugin opens the parent directory without selecting the file. Each command must exit successfully to count, otherwise the next one is tried and the failure is reported. If none works and neither `DISPLAY` nor `WAYLAND_DISPLAY` is set, the error says there is no graphical session. Other Unix systems (BSDs) use the Linux commands.
+- **macOS:** `open` is waited for, so a failure is reported.
+- **WSL:** detected through `WSL_DISTRO_NAME`, `WSL_INTEROP` or `/proc/version`. Without `wslpath`, `/mnt/c/...` becomes `C:\...` and other paths become `\\wsl.localhost\<distro>\...`. `wslview` is deliberately not used: it passes the path through PowerShell, which would evaluate `$(...)` in a file name. The `editor` command runs on the Linux side with the Linux path.
+- **Windows:** Explorer is started from `%SystemRoot%` and is never waited for, because it returns a non-zero exit code even on success, so the plugin cannot detect when it fails. Paths containing `"`, `<`, `>`, `|`, `*`, `?` or control characters are refused. Commands never go through `cmd /c start`. The `editor` command is resolved to an absolute `.exe` on `PATH` (the current directory is never searched). Batch files (`.cmd`, `.bat`) are never run, because `cmd.exe` would interpret characters in file names. The `.cmd` shims of VS Code, VS Code Insiders, VSCodium, Cursor and Windsurf are mapped to the real executable next to them. Any other batch-file editor is refused, and the plugin falls back to `action` (or `reveal` when `action` is `editor`) with a warning toast; set `editor` to the editor's `.exe` instead.
 
 On all systems, commands are started directly with an argument list (`spawn` with `shell: false`). File names are never interpolated into a shell command line. The CI runs the unit tests (including command construction for every platform) on Linux, macOS and Windows; reports from real macOS, Windows and WSL setups are very welcome.
 
@@ -266,16 +278,17 @@ http://127.0.0.1:<port>/open?path=<path>&line=<n>&action=<reveal|open|editor>&t=
 http://127.0.0.1:<port>/o?p=<path>&l=<n>&a=<action>&t=<token>
 ```
 
-`line` and `action` are optional. Since these are ordinary `http` URLs, any client that can open web links can use them. When the bridge is running, the tools' output includes such a URL for the user. With `linkRewrite: "instruct"` the plugin adds a system instruction asking the model to write local file links in this form, and turns bridge URLs in earlier messages back into plain paths before they are sent to the model.
+`line` and `action` are optional. Since these are ordinary `http` URLs, any client that can open web links can use them by opening them in a browser. With `linkRewrite: "instruct"` the plugin adds a system instruction asking the model to write local file links in this form, includes such a URL in the tools' output, and turns bridge URLs in earlier messages back into plain paths before they are sent to the model.
 
 Both parts share the same link parser, path policy and per-OS launcher.
 
 ## Security
 
-- **Project boundary.** Every target is resolved with `realpath` and must lie inside the session directory, the project directory or one of `extraRoots`, so `../` and symlinks cannot escape. `allowOutsideProject: true` lifts this restriction.
-- **No shell.** Commands are spawned with an argument list. File names and editor placeholders are substituted per argument and never parsed by a shell.
-- **Bridge.** It listens only on `127.0.0.1`. It accepts only `GET` and `HEAD`, requires a `Host` header of `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding protection), rejects foreign `Origin` headers, and allows at most 10 requests per second. Every request needs a random token (32 bytes, generated on each start) that is compared in constant time; there is no per-link signature. Responses are small HTML pages with a nonce-based Content Security Policy, `X-Frame-Options: DENY` and `Cache-Control: no-store`. The bridge applies the same path policy as clicks, and the token is not written to the plugin's log.
-- **The bridge token can reach your LLM provider.** With `linkRewrite: "instruct"` it is part of the system instruction, because the model has to write it into URLs. Also, while the bridge is running, the output of `open_file` and `reveal_file` contains a bridge URL with the token, and tool output is part of the conversation sent to the provider. The token only allows revealing or opening files inside the allowed directories on your own machine through `127.0.0.1`, and it changes every time opencode starts. If you do not want it to leave your machine, set `bridge: false` (and keep `linkRewrite: "off"`), or `tools: false`.
+- **Project boundary.** Every candidate path must lie inside the session directory, the project directory or one of `extraRoots`. Paths outside are refused before the file system is touched, so the plugin does not even reveal whether they exist. After `realpath`, the target is checked again, so `../` and symlinks cannot escape. `allowOutsideProject: true` lifts this restriction, except for Windows network and device paths (`\\server\share`, `\\?\...`, `\\.\...`), which are only allowed inside `extraRoots` (touching a share can send your Windows credentials to that host).
+- **No shell.** Commands are spawned with an argument list. File names and editor placeholders are substituted per argument and never parsed by a shell. On Windows, batch files are never run and commands are resolved to absolute paths (see [Supported systems](#supported-systems)).
+- **No code execution through `open`.** Executable-like files (scripts, installers, shortcuts, app bundles) are revealed instead of opened, so one click on a link written by the model cannot run a program.
+- **Bridge.** It listens only on `127.0.0.1` and accepts only `GET` and `HEAD`; `HEAD` never performs an action. It requires a `Host` header of `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding protection) and refuses any `Origin` other than its own (including `Origin: null`). When the browser sends fetch metadata, only direct navigations are accepted (`Sec-Fetch-Site` `none` or `same-origin`, `Sec-Fetch-Mode` `navigate`), so other web sites cannot trigger it through images, scripts, frames or `fetch`. It allows at most 10 requests per second. Every request needs a random token (32 bytes, generated on each start) that is compared in constant time; there is no per-link signature. Responses are small HTML pages with a nonce-based Content Security Policy, `X-Frame-Options: DENY` and `Cache-Control: no-store`. The bridge applies the same path policy as clicks, and the token is not written to the plugin's log.
+- **`linkRewrite: "instruct"` sends the bridge token to your LLM provider**, because the model has to write it into URLs: it is part of the system instruction and of the agent tools' output. The token only allows revealing or opening files inside the allowed directories on your own machine through `127.0.0.1`, and it changes every time opencode starts. Still, it leaves your machine, and the model may echo it in places you do not expect. This is why the option is off by default. With `linkRewrite: "off"`, the token is never put into anything sent to the model.
 - **The agent tools** can only reveal or open files under the same policy. They cannot run arbitrary commands.
 
 Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
@@ -296,7 +309,7 @@ Add `OPENCODE_FILELINK_DRY_RUN=1` to log the commands the plugin would run inste
 - Make sure the plugin loaded: `/links` should exist. A plugin entry written in the tuple form is skipped; use the object form shown in [Configuration](#configuration).
 - If click interception is not available in your opencode version, the plugin shows a warning toast at startup. Use `/links` instead.
 - The file may be missing or outside the project. Look for an error toast, or check the debug log.
-- On Linux, opencode may run in an environment without `DISPLAY`, `WAYLAND_DISPLAY` or `DBUS_SESSION_BUS_ADDRESS` (for example over SSH). Try `xdg-open .` in the same shell to check.
+- On Linux, opencode may run in an environment without `DISPLAY`, `WAYLAND_DISPLAY` or `DBUS_SESSION_BUS_ADDRESS` (for example over SSH). The error toast then mentions the missing graphical session. Try `xdg-open .` in the same shell to check.
 
 **My terminal opens the link itself, or tries to open a relative path.**
 Terminals with hyperlink support (OSC 8), such as kitty, WezTerm, iTerm2 or Windows Terminal, may handle Ctrl+click or Cmd+click on their own, with the raw relative path. The plugin cannot change what the terminal does. Use a plain click.
@@ -307,8 +320,11 @@ The file lives on the server, but the file manager would have to run on your lap
 **Windows: Explorer opens the wrong folder, or nothing happens.**
 Explorer returns a non-zero exit code even on success, so the plugin cannot tell success from failure. Check that the path does not contain characters Windows does not allow. Windows support has had less testing than Linux, so bug reports are very welcome.
 
+**Windows: "Editor not started: ... is a batch file".**
+Your editor is installed as a `.cmd` or `.bat` shim that the plugin does not know how to map to a real executable. Set `editor` to the editor's `.exe`, for example `["C:\\Program Files\\Editor\\editor.exe", "{file}"]`.
+
 **WSL: the file opens in a Windows app instead of a Linux one.**
-That is expected. Under WSL, `reveal` uses Windows Explorer and `open` uses `wslview`, which hands the file to Windows. Use `editor` with a Linux-side command if you prefer.
+That is expected. Under WSL, `reveal` and `open` use Windows Explorer, which hands the file to Windows. Use `editor` with a Linux-side command if you prefer.
 
 **Can I use `/open`?**
 No, `/open` is a built-in opencode command (open session or project). The plugin uses `/links` and `/files`.
@@ -317,7 +333,7 @@ No, `/open` is a built-in opencode command (open session or project). The plugin
 
 - Click interception relies on how the opencode TUI looks up links internally (`renderer.getLinkAt`). It is verified on opencode 2.2.0 and may break in a later release. If the method is missing, the plugin shows a warning toast; `/links`, the tools and the bridge keep working. A link handler API for TUI plugins in opencode itself would remove this dependency.
 - opencode 2.x has no hook to edit assistant text after it is generated, so plain paths in messages cannot be rewritten into bridge URLs. `linkRewrite: "instruct"` relies on the model following the instruction.
-- On Windows, editors installed as `.cmd` shims (such as `code`) are retried as `code.cmd` when `code` cannot be started. Whether this works depends on the runtime's rules for launching `.cmd` files without a shell and has not been verified on real Windows; if it fails, set `editor` to the full path of the editor's `.exe`.
+- On Windows, batch-file editors other than the known VS Code-family shims cannot be used; point `editor` at an `.exe`. The shim mapping follows the standard install layout (`bin\code.cmd` next to `Code.exe`) and has not been verified on real Windows yet.
 - Recently clicked links in `/links` are kept in memory only and are lost when opencode restarts.
 - The opencode desktop (GUI) app is not supported yet. It has its own link handler API, planned for a later release.
 - Terminal editors cannot share the terminal with the TUI; launch them in a new terminal window.

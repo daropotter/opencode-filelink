@@ -27,8 +27,8 @@ You can expect an acknowledgement within 7 days. Once a fix is ready, it is rele
 
 Areas of particular interest:
 
-- **Path policy:** opening or revealing files outside the allowed roots without `allowOutsideProject`, for example through `..`, symlinks, percent-encoding, `file://` or Windows drive and UNC paths.
-- **Command execution:** any way for a link, file name, tool argument or editor placeholder to execute commands or inject arguments beyond the intended launcher.
-- **Localhost bridge:** access from other origins or hosts, DNS rebinding, token bypass, or the bridge listening on anything other than `127.0.0.1`.
+- **Path policy:** opening or revealing files outside the allowed roots without `allowOutsideProject`, for example through `..`, symlinks, percent-encoding, `file://` or Windows drive and UNC paths; probing whether files outside the allowed roots exist; or reaching Windows network and device paths outside `extraRoots`.
+- **Command execution:** any way for a link, file name, tool argument or editor placeholder to execute commands or inject arguments beyond the intended launcher. This includes `open` running an executable-like file, and Windows batch-file or current-directory executable tricks.
+- **Localhost bridge:** access from other origins or hosts (including cross-site requests from web pages), DNS rebinding, token bypass, or the bridge listening on anything other than `127.0.0.1`.
 
-Known and documented behavior, not a vulnerability: the bridge token is sent to the configured LLM provider with `linkRewrite: "instruct"` (in the system instruction), and while the bridge is running it is also included in the output of the `open_file` and `reveal_file` tools. The token is per process and only allows revealing or opening files inside the allowed roots through `127.0.0.1`. See the README's Security section.
+Known and documented behavior, not a vulnerability: with `linkRewrite: "instruct"` the bridge token is sent to the configured LLM provider (in the system instruction and in the agent tools' output). The token is per process and only allows revealing or opening files inside the allowed roots through `127.0.0.1`. See the README's Security section.
