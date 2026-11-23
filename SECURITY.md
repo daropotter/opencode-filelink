@@ -29,6 +29,6 @@ Areas of particular interest:
 
 - **Path policy:** opening or revealing files outside the allowed roots without `allowOutsideProject`, for example through `..`, symlinks, percent-encoding, `file://` or Windows drive and UNC paths.
 - **Command execution:** any way for a link, file name, tool argument or editor placeholder to execute commands or inject arguments beyond the intended launcher.
-- **Localhost bridge:** access from other origins or hosts, DNS rebinding, token or signature bypass, or the bridge listening on anything other than `127.0.0.1`.
+- **Localhost bridge:** access from other origins or hosts, DNS rebinding, token bypass, or the bridge listening on anything other than `127.0.0.1`.
 
-Known and documented behavior, not a vulnerability: with `linkRewrite: "instruct"` the bridge token is sent to the configured LLM provider (see the README's Security section).
+Known and documented behavior, not a vulnerability: the bridge token is sent to the configured LLM provider with `linkRewrite: "instruct"` (in the system instruction), and while the bridge is running it is also included in the output of the `open_file` and `reveal_file` tools. The token is per process and only allows revealing or opening files inside the allowed roots through `127.0.0.1`. See the README's Security section.
