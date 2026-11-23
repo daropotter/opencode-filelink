@@ -107,9 +107,40 @@ describe("bridge", () => {
     const res = await raw(`/open?path=x&t=${bridge.token}`, { Host: `127.0.0.1:${bridge.port}` }, "POST")
     expect(res.status).toBe(405)
     expect(res.headers.allow).toBe("GET, HEAD")
-    const head = await raw(`/open?path=x&t=${bridge.token}`, { Host: `127.0.0.1:${bridge.port}` }, "HEAD")
+    const before = seen.length
+    const head = await raw(`/open?path=head-only.md&t=${bridge.token}`, { Host: `127.0.0.1:${bridge.port}` }, "HEAD")
     expect(head.status).toBe(200)
     expect(head.body).toBe("")
+    // HEAD (link previews, prefetchers) never performs the action
+    expect(seen.length).toBe(before)
+    expect(seen.some((r) => r.path === "head-only.md")).toBe(false)
+  })
+
+  test("Origin: null (sandboxed frames, data: pages) is rejected", async () => {
+    const res = await raw(`/open?path=x&t=${bridge.token}`, { Host: `127.0.0.1:${bridge.port}`, Origin: "null" })
+    expect(res.status).toBe(403)
+    const https = await raw(`/open?path=x&t=${bridge.token}`, {
+      Host: `127.0.0.1:${bridge.port}`,
+      Origin: `https://127.0.0.1:${bridge.port}`,
+    })
+    expect(https.status).toBe(403)
+  })
+
+  test("fetch metadata: cross-site and non-navigation requests are rejected (CSRF)", async () => {
+    const host = { Host: `127.0.0.1:${bridge.port}` }
+    const path = `/open?path=csrf.md&t=${bridge.token}`
+    const before = seen.length
+    for (const site of ["cross-site", "same-site"]) {
+      expect((await raw(path, { ...host, "Sec-Fetch-Site": site, "Sec-Fetch-Mode": "navigate" })).status).toBe(403)
+    }
+    for (const mode of ["no-cors", "cors", "same-origin", "websocket"]) {
+      expect((await raw(path, { ...host, "Sec-Fetch-Site": "none", "Sec-Fetch-Mode": mode })).status).toBe(403)
+    }
+    expect(seen.length).toBe(before)
+    // A link opened from the terminal / another app: top-level navigation, Sec-Fetch-Site none.
+    const ok = await raw(path, { ...host, "Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" })
+    expect(ok.status).toBe(200)
+    expect(seen.at(-1)?.path).toBe("csrf.md")
   })
 
   test("parameter validation", async () => {

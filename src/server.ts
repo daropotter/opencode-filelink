@@ -27,8 +27,15 @@ export type Opener = (req: OpenRequest) => Promise<OpenOutcome>
 
 const ACTION_ENUM = ["reveal", "open", "editor"] as const
 
+/**
+ * Tool result. A bridge URL (which carries the bridge token) is only added when
+ * `bridge` is passed, i.e. with `linkRewrite: "instruct"`, where the token is
+ * part of the system instruction anyway. Otherwise tool output would send the
+ * token to the model provider and into shared transcripts.
+ */
 function toolOutput(outcome: OpenOutcome, bridge: Bridge | undefined, path: string, line?: number): ToolResult {
   let output = outcome.message
+  if (outcome.warning) output += `\nNote: ${outcome.warning}`
   if (outcome.ok && bridge) {
     output += `\nClickable link for the user (opens via the local bridge): ${bridge.url(path, line !== undefined ? { line } : {})}`
   }
@@ -181,39 +188,45 @@ export async function setupServer(ctx: ServerContext, deps: ServerDeps = {}): Pr
     }
   }
 
-  if (config.tools && typeof ctx.tool?.transform === "function") {
-    try {
-      const tools = createTools(open, () => bridge)
-      await ctx.tool.transform((editor) => {
-        for (const tool of tools) {
-          try {
-            editor.add(tool)
-          } catch (err) {
-            log(`could not register tool ${tool.name}: ${(err as Error)?.message}`)
+  try {
+    if (config.tools && typeof ctx.tool?.transform === "function") {
+      try {
+        const tools = createTools(open, () => (config.linkRewrite === "instruct" ? bridge : undefined))
+        await ctx.tool.transform((editor) => {
+          for (const tool of tools) {
+            try {
+              editor.add(tool)
+            } catch (err) {
+              log(`could not register tool ${tool.name}: ${(err as Error)?.message}`)
+            }
           }
-        }
-      })
-      log(`tools registered: ${tools.map((t) => t.name).join(", ")}`)
-    } catch (err) {
-      log(`tool registration failed: ${(err as Error)?.message ?? String(err)}`)
+        })
+        log(`tools registered: ${tools.map((t) => t.name).join(", ")}`)
+      } catch (err) {
+        log(`tool registration failed: ${(err as Error)?.message ?? String(err)}`)
+      }
     }
-  }
 
-  if (config.linkRewrite === "instruct" && bridge && typeof ctx.session?.hook === "function") {
-    const b = bridge
-    try {
-      await ctx.session.hook("context", (input: { system?: unknown; messages?: unknown }) => {
-        try {
-          if (Array.isArray(input?.system)) input.system.push({ type: "text", text: rewriteInstruction(b) })
-          if (Array.isArray(input?.messages)) stripBridgeUrls(input.messages, b.urlPattern())
-        } catch (err) {
-          log(`context hook failed: ${(err as Error)?.message}`)
-        }
-      })
-      log("linkRewrite: instruct enabled (the bridge token is sent to the model provider)")
-    } catch (err) {
-      log(`context hook registration failed: ${(err as Error)?.message ?? String(err)}`)
+    if (config.linkRewrite === "instruct" && bridge && typeof ctx.session?.hook === "function") {
+      const b = bridge
+      try {
+        await ctx.session.hook("context", (input: { system?: unknown; messages?: unknown }) => {
+          try {
+            if (Array.isArray(input?.system)) input.system.push({ type: "text", text: rewriteInstruction(b) })
+            if (Array.isArray(input?.messages)) stripBridgeUrls(input.messages, b.urlPattern())
+          } catch (err) {
+            log(`context hook failed: ${(err as Error)?.message}`)
+          }
+        })
+        log("linkRewrite: instruct enabled (the bridge token is sent to the model provider)")
+      } catch (err) {
+        log(`context hook registration failed: ${(err as Error)?.message ?? String(err)}`)
+      }
     }
+  } catch (err) {
+    // Never leave the bridge listening when setup fails half-way.
+    await bridge?.close().catch(() => {})
+    throw err
   }
 
   log(`server ready (platform ${platform}, project ${projectDir})`)

@@ -62,6 +62,11 @@ function tokenEquals(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y)
 }
 
+function header(req: IncomingMessage, name: string): string | undefined {
+  const v = req.headers[name]
+  return typeof v === "string" ? v.toLowerCase() : Array.isArray(v) ? (v[0] ?? "").toLowerCase() : undefined
+}
+
 function send(res: ServerResponse, status: number, ok: boolean, message: string): void {
   const nonce = randomBytes(16).toString("base64")
   const body = renderPage(ok, message, nonce)
@@ -89,16 +94,26 @@ export function startBridge(opts: BridgeOptions): Promise<Bridge> {
     const allowedHosts = new Set([`${HOST}:${port}`, `localhost:${port}`])
     const host = (req.headers.host ?? "").toLowerCase()
     if (!allowedHosts.has(host)) return send(res, 403, false, "Forbidden host")
+    // Origin is sent by fetch/XHR/forms; "null" comes from sandboxed frames, data: and file: pages.
     const origin = req.headers.origin
-    if (origin !== undefined && origin !== "null" && !allowedHosts.has(origin.replace(/^http:\/\//, "").toLowerCase())) {
+    if (origin !== undefined && !(origin.startsWith("http://") && allowedHosts.has(origin.slice(7).toLowerCase()))) {
       return send(res, 403, false, "Forbidden origin")
     }
+    // Fetch metadata (all current browsers): a link opened from a terminal or another
+    // application is a top-level navigation with Sec-Fetch-Site "none". Requests made
+    // by other web sites (img/script/iframe/fetch, or navigations they trigger) are not.
+    const site = header(req, "sec-fetch-site")
+    if (site !== undefined && site !== "none" && site !== "same-origin") return send(res, 403, false, "Cross-site request refused")
+    const mode = header(req, "sec-fetch-mode")
+    if (mode !== undefined && mode !== "navigate") return send(res, 403, false, "Only direct navigation is allowed")
     if (req.method !== "GET" && req.method !== "HEAD") {
       res.setHeader("Allow", "GET, HEAD")
       return send(res, 405, false, "Method not allowed")
     }
     const url = new URL(req.url ?? "/", `http://${HOST}:${port}`)
     if (url.pathname !== "/open" && url.pathname !== "/o") return send(res, 404, false, "Not found")
+    // HEAD (link previews, prefetchers) must never trigger an action.
+    if (req.method === "HEAD") return send(res, 200, true, "opencode-filelink bridge")
 
     const now = Date.now()
     if (now - windowStart >= 1000) {
@@ -146,6 +161,8 @@ export function startBridge(opts: BridgeOptions): Promise<Bridge> {
     server.once("error", reject)
     server.listen(opts.port ?? 0, HOST, () => {
       server.off("error", reject)
+      // Keep a listener: an unhandled 'error' event would crash the opencode server process.
+      server.on("error", (err) => opts.log?.(`bridge error: ${err?.message ?? String(err)}`))
       port = (server.address() as AddressInfo).port
       const origin = `http://${HOST}:${port}`
       opts.log?.(`bridge listening on ${origin}`)

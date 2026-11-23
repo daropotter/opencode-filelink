@@ -94,16 +94,10 @@ describe("setupServer", () => {
       const r = await f.tools[0]!.execute({ path: "docs/report.md" })
       expect(r.metadata?.ok).toBe(true)
       expect(calls[0]).toMatchObject({ cmd: "open", args: ["-R", join(project.root, "docs", "report.md")] })
-      const url = /http:\/\/127\.0\.0\.1:\d+\/open\?\S+/.exec(r.output ?? "")?.[0]
-      expect(url).toBeTruthy()
-      // the bridge performs the same action
-      const res = await fetch(url!)
-      expect(res.status).toBe(200)
-      expect(calls).toHaveLength(2)
-      // outside the project is refused through the bridge as well
-      const outside = new URL(url!)
-      outside.searchParams.set("path", "../../etc/passwd")
-      expect((await fetch(outside)).status).toBe(422)
+      // The bridge token must not reach the model provider via tool output (linkRewrite is off).
+      expect(r.output).not.toContain("127.0.0.1")
+      expect(r.output).not.toContain("t=")
+      expect(JSON.stringify(r)).not.toContain("/open?")
     } finally {
       await cleanup()
     }
@@ -111,7 +105,12 @@ describe("setupServer", () => {
 
   test("tools: false and bridge disabled", async () => {
     const f = fakeServerCtx({ tools: false, bridge: { enabled: false } })
-    const cleanup = await setupServer(f.ctx, { skipConfigFiles: true, platform: "linux", log: () => {} })
+    const cleanup = await setupServer(f.ctx, {
+      skipConfigFiles: true,
+      platform: "linux",
+      exec: { spawner: fakeSpawner().spawner },
+      log: () => {},
+    })
     expect(f.tools).toHaveLength(0)
     await cleanup()
   })
@@ -119,11 +118,21 @@ describe("setupServer", () => {
   test("linkRewrite: instruct adds a system part and strips bridge URLs from history", async () => {
     const logs: string[] = []
     const f = fakeServerCtx({ linkRewrite: "instruct", bridge: { enabled: false } })
-    const cleanup = await setupServer(f.ctx, { skipConfigFiles: true, platform: "linux", log: (m) => logs.push(m) })
+    const cleanup = await setupServer(f.ctx, {
+      skipConfigFiles: true,
+      platform: "linux",
+      exec: { spawner: fakeSpawner().spawner },
+      log: (m) => logs.push(m),
+    })
     try {
       expect(f.hooks.map((h) => h.name)).toEqual(["context"])
       const urlInTool = /http:\/\/127\.0\.0\.1:\d+\/open\?\S+/.exec((await f.tools[0]!.execute({ path: "docs/report.md" })).output ?? "")
       expect(urlInTool).toBeTruthy() // bridge started for instruct mode even with bridge.enabled false
+      // the bridge performs the same action, and refuses paths outside the project
+      expect((await fetch(urlInTool![0])).status).toBe(200)
+      const outside = new URL(urlInTool![0])
+      outside.searchParams.set("path", "../../etc/passwd")
+      expect((await fetch(outside)).status).toBe(422)
       const input = {
         system: [] as { type: string; text: string }[],
         messages: [{ role: "assistant", content: [{ type: "text", text: `see [r](${urlInTool![0]})` }] }],
@@ -158,7 +167,12 @@ describe("setupServer", () => {
       options: { linkRewrite: "instruct", bridge: { port: 1 } },
     }
     const logs: string[] = []
-    const cleanup = await setupServer(ctx, { skipConfigFiles: true, platform: "linux", log: (m) => logs.push(m) })
+    const cleanup = await setupServer(ctx, {
+      skipConfigFiles: true,
+      platform: "linux",
+      exec: { spawner: fakeSpawner().spawner },
+      log: (m) => logs.push(m),
+    })
     await cleanup()
     expect(logs.some((l) => l.includes("tool registration failed: transform broke"))).toBe(true)
   })
@@ -182,7 +196,12 @@ describe("setupServer", () => {
         },
       },
     }
-    const cleanup = await setupServer(ctx, { skipConfigFiles: true, platform: "linux", log: () => {} })
+    const cleanup = await setupServer(ctx, {
+      skipConfigFiles: true,
+      platform: "linux",
+      exec: { spawner: fakeSpawner().spawner },
+      log: () => {},
+    })
     await cleanup()
     expect(threw).toBe(false)
   })
@@ -232,5 +251,52 @@ describe("rewrite helpers", () => {
     expect(msgs[0]?.nested[0]?.text).toBe("[q](q)")
     stripBridgeUrls(null, re)
     stripBridgeUrls([Object.freeze({ text: "http://127.0.0.1:9/open?path=z&t=k" })], re)
+  })
+})
+
+describe("setupServer cleanup", () => {
+  test("the bridge is closed when setup fails after it started", async () => {
+    let port = 0
+    const ctx: ServerContext = {
+      location: { directory: project.root },
+      options: { bridge: { enabled: true } },
+      tool: {
+        get transform(): never {
+          throw new Error("hostile getter")
+        },
+      },
+    }
+    const logs: string[] = []
+    await expect(
+      setupServer(ctx, {
+        skipConfigFiles: true,
+        platform: "linux",
+        exec: { spawner: fakeSpawner().spawner },
+        log: (m) => {
+          logs.push(m)
+          const m2 = /bridge listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(m)
+          if (m2) port = Number(m2[1])
+        },
+      }),
+    ).rejects.toThrow("hostile getter")
+    expect(port).toBeGreaterThan(0)
+    // nothing listens on the port any more
+    await expect(fetch(`http://127.0.0.1:${port}/open`)).rejects.toThrow()
+  })
+
+  test("cleanup closes the bridge", async () => {
+    let port = 0
+    const cleanup = await setupServer(fakeServerCtx().ctx, {
+      skipConfigFiles: true,
+      platform: "linux",
+      exec: { spawner: fakeSpawner().spawner },
+      log: (m) => {
+        const m2 = /bridge listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(m)
+        if (m2) port = Number(m2[1])
+      },
+    })
+    expect((await fetch(`http://127.0.0.1:${port}/open`)).status).toBe(403)
+    await cleanup()
+    await expect(fetch(`http://127.0.0.1:${port}/open`)).rejects.toThrow()
   })
 })

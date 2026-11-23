@@ -222,6 +222,62 @@ describe("setupTui", () => {
     expect(Object.hasOwn(r, "getLinkAt")).toBe(false)
   })
 
+  test("web links, mail links and anchors reach opencode's own handler untouched", async () => {
+    const r = new FakeRenderer()
+    const web = [
+      "https://example.com/a.md",
+      "http://127.0.0.1:4096/x",
+      "mailto:me@example.com",
+      "#section",
+      "www.example.com",
+      "vscode://file/x",
+    ]
+    for (const [i, u] of web.entries()) r.links.set(`${i},0`, u)
+    const f = fakeCtx({ renderer: r as unknown as RendererLike })
+    const { spawner, calls } = fakeSpawner()
+    const h = setupTui(f.ctx, { skipConfigFiles: true, platform: "linux", exec: { spawner }, log: () => {} })
+    for (const [i, u] of web.entries()) expect(r.getLinkAt(i, 0)).toBe(u)
+    await tick()
+    expect(calls).toHaveLength(0)
+    expect(f.toasts).toHaveLength(0)
+    h.cleanup()
+  })
+
+  test("a click is handled exactly once, even when the plugin is loaded twice", async () => {
+    const r = new FakeRenderer()
+    r.links.set("1,1", "docs/report.md")
+    const f = fakeCtx({ renderer: r as unknown as RendererLike })
+    const { spawner, calls } = fakeSpawner()
+    const a = setupTui(f.ctx, { skipConfigFiles: true, platform: "darwin", exec: { spawner }, log: () => {} })
+    const b = setupTui(f.ctx, { skipConfigFiles: true, platform: "darwin", exec: { spawner }, log: () => {} })
+    expect(r.getLinkAt(1, 1)).toBeNull()
+    await tick()
+    await tick()
+    expect(calls).toHaveLength(1)
+    b.cleanup()
+    a.cleanup()
+    expect(Object.hasOwn(r, "getLinkAt")).toBe(false)
+    expect(r.getLinkAt(1, 1)).toBe("docs/report.md")
+  })
+
+  test("fallbacks are shown as a warning toast", async () => {
+    const f = fakeCtx({ options: { action: "open" } })
+    const t = tempTree({ "x.desktop": "x" })
+    try {
+      const h = setupTui(
+        { ...f.ctx, location: { directory: t.root } },
+        { skipConfigFiles: true, platform: "linux", exec: { spawner: fakeSpawner().spawner }, log: () => {} },
+      )
+      const o = await h.handleLink("x.desktop")
+      expect(o).toMatchObject({ ok: true, action: "reveal" })
+      expect(f.toasts).toEqual([expect.objectContaining({ variant: "warning" })])
+      expect(f.toasts[0]?.message).toContain("executable")
+      h.cleanup()
+    } finally {
+      t.cleanup()
+    }
+  })
+
   test("errors always toast; success toast can be disabled", async () => {
     const f = fakeCtx({ options: { toast: false } })
     const h = setupTui(f.ctx, { skipConfigFiles: true, platform: "darwin", exec: { spawner: fakeSpawner().spawner }, log: () => {} })
@@ -245,7 +301,7 @@ describe("setupTui", () => {
   test("intercept: false leaves the renderer alone", () => {
     const r = new FakeRenderer()
     const f = fakeCtx({ renderer: r as unknown as RendererLike, options: { intercept: false } })
-    const h = setupTui(f.ctx, { skipConfigFiles: true, platform: "linux", log: () => {} })
+    const h = setupTui(f.ctx, { skipConfigFiles: true, platform: "linux", exec: { spawner: fakeSpawner().spawner }, log: () => {} })
     expect(h.interceptor.installed).toBe(false)
     expect(Object.hasOwn(r, "getLinkAt")).toBe(false)
   })
@@ -253,7 +309,12 @@ describe("setupTui", () => {
   test("missing getLinkAt: logs and shows a one-time warning toast", async () => {
     const logs: string[] = []
     const f = fakeCtx({ renderer: {} as RendererLike })
-    const h = setupTui(f.ctx, { skipConfigFiles: true, platform: "linux", log: (m) => logs.push(m) })
+    const h = setupTui(f.ctx, {
+      skipConfigFiles: true,
+      platform: "linux",
+      exec: { spawner: fakeSpawner().spawner },
+      log: (m) => logs.push(m),
+    })
     expect(h.interceptor.installed).toBe(false)
     expect(logs.some((l) => l.includes("click interception unavailable"))).toBe(true)
     await new Promise((r) => setTimeout(r, 1600))
@@ -262,7 +323,7 @@ describe("setupTui", () => {
 
   test("registers /links with alias and optional keybind", () => {
     const f = fakeCtx({ options: { keybind: "<leader>l" } })
-    setupTui(f.ctx, { skipConfigFiles: true, platform: "linux", log: () => {} }).cleanup()
+    setupTui(f.ctx, { skipConfigFiles: true, platform: "linux", exec: { spawner: fakeSpawner().spawner }, log: () => {} }).cleanup()
     expect(f.commands).toHaveLength(1)
     expect(f.layerModes).toEqual(["global"]) // "base" is not reachable from palette/slash in 2.2.0
     expect(f.commands[0]).toMatchObject({
@@ -272,7 +333,7 @@ describe("setupTui", () => {
       bind: "<leader>l",
     })
     const g = fakeCtx()
-    setupTui(g.ctx, { skipConfigFiles: true, platform: "linux", log: () => {} }).cleanup()
+    setupTui(g.ctx, { skipConfigFiles: true, platform: "linux", exec: { spawner: fakeSpawner().spawner }, log: () => {} }).cleanup()
     expect(g.commands[0]?.bind).toBeUndefined()
   })
 
@@ -317,7 +378,7 @@ describe("setupTui", () => {
   test("/links with nothing to show toasts instead of an empty dialog", async () => {
     ;(globalThis as Record<symbol, unknown>)[Symbol.for("opencode-filelink.recent")] = []
     const f = fakeCtx({ route: { type: "session", sessionID: "ses_1" }, messages: [] })
-    const h = setupTui(f.ctx, { skipConfigFiles: true, platform: "linux", log: () => {} })
+    const h = setupTui(f.ctx, { skipConfigFiles: true, platform: "linux", exec: { spawner: fakeSpawner().spawner }, log: () => {} })
     await h.openLinksDialog()
     expect(f.selects).toHaveLength(0)
     expect(f.toasts[0]?.message).toContain("No local file links")
