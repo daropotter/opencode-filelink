@@ -1,0 +1,77 @@
+name: Bug report
+description: A link does not open, opens the wrong thing, or the plugin fails to load.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do not report security vulnerabilities here; see SECURITY.md.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead. Include any toast or error message.
+    validations:
+      required: true
+  - type: textarea
+    id: link
+    attributes:
+      label: Link text
+      description: The exact markdown link from the assistant message, for example `[report](docs/my%20report.md:42)`.
+      render: markdown
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: opencode-version
+    attributes:
+      label: opencode version
+      description: Output of `opencode --version`.
+      placeholder: "2.2.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - WSL
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment details
+      description: Distribution and desktop or file manager (Linux), terminal emulator, local or remote (SSH) session.
+      placeholder: "Ubuntu 24.04, GNOME/Nautilus, kitty, local"
+  - type: dropdown
+    id: action
+    attributes:
+      label: Action
+      options:
+        - reveal (default)
+        - open
+        - editor
+        - /links command
+        - open_file tool
+        - bridge URL
+  - type: textarea
+    id: config
+    attributes:
+      label: Plugin configuration
+      description: The plugin entry from your opencode.json (redact anything private).
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines mentioning `opencode-filelink` from the opencode log.
+      render: text
